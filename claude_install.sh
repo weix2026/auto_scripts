@@ -97,6 +97,13 @@ step "安装 @anthropic-ai/claude-code"
 
 info "全局安装 claude..."
 pnpm add -g @anthropic-ai/claude-code
+
+# 手动执行 postinstall（pnpm 全局安装可能跳过）
+CLAUDE_PKG_DIR=$(pnpm root -g)/@anthropic-ai/claude-code
+if [[ -f "$CLAUDE_PKG_DIR/install.cjs" ]]; then
+  info "执行 postinstall 安装原生二进制..."
+  node "$CLAUDE_PKG_DIR/install.cjs"
+fi
 ok "claude 安装完成"
 
 # -- 6. 环境变量持久化 ---------------------------------------------------------
