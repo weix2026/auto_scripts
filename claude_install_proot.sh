@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# claude 一键安装脚本 - 原生 Debian + pnpm v10 独立版
-# 平台：原生 Debian (VPS / 服务器 / 虚拟机)
+# claude 一键安装脚本 - proot-distro Debian 版
+# 平台：Termux proot-distro Debian (Android 手机 / 平板)
 # 架构：Standalone pnpm -> Node.js (LTS) -> @anthropic-ai/claude-code
 # =============================================================================
 
@@ -16,17 +16,21 @@ warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 step()  { echo -e "\n${BLUE}=== $* ===${NC}"; }
 die()   { echo -e "${RED}[ERR]${NC} $*" >&2; exit 1; }
 
-echo -e "\n${GREEN}=== claude 一键部署 (原生 Debian) ===${NC}\n"
+echo -e "\n${GREEN}=== claude 一键部署 (proot-distro Debian) ===${NC}\n"
 
-# -- 0. 基础环境 ---------------------------------------------------------------
+# -- 0. proot 环境修复 ----------------------------------------------------------
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export DEBIAN_FRONTEND=noninteractive
 
-# DNS 检查 (某些精简镜像可能缺少 resolv.conf)
+# proot 环境 /tmp 可能未就绪
+mkdir -p /tmp && chmod 1777 /tmp 2>/dev/null || true
+
+# proot DNS 经常丢失，使用国内公共 DNS 加速
 if [[ ! -s /etc/resolv.conf ]]; then
-  warn "DNS 配置缺失，写入公共 DNS..."
-  printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+  warn "proot DNS 缺失，写入国内公共 DNS..."
+  rm -f /etc/resolv.conf 2>/dev/null || true
+  printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\n' > /etc/resolv.conf 2>/dev/null || true
 fi
 
 # -- 1. 系统依赖 ----------------------------------------------------------------
@@ -39,10 +43,10 @@ info "安装必要工具..."
 apt-get install -y -qq --no-install-recommends \
   curl ca-certificates git unzip xz-utils >/dev/null
 
-info "清理 apt 缓存..."
+info "清理 apt 缓存 (节省手机存储)..."
 apt-get autoremove -y -qq >/dev/null
 apt-get clean -qq
-rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 ok "基础环境就绪"
 
 # -- 2. pnpm v10 ---------------------------------------------------------------
@@ -156,11 +160,11 @@ check "Node.js" "node"   "-v"
 check "npm"     "npm"    "-v"
 check "claude"  "claude" "--version"
 
-# -- 8. 清理 --------------------------------------------------------------------
-step "清理缓存"
+# -- 8. 清理 (手机存储寸土寸金) --------------------------------------------------
+step "极限清理缓存"
 
 pnpm store prune >/dev/null 2>&1 || true
-rm -rf ~/.cache/pnpm /tmp/* 2>/dev/null || true
+rm -rf ~/.npm ~/.cache/pnpm /tmp/* 2>/dev/null || true
 ok "空间回收完成"
 
 # -- 完成 -----------------------------------------------------------------------

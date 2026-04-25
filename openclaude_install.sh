@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# OpenClaude 极简安装脚本 - proot-distro Debian 终极优化版
-# 架构：Standalone pnpm -> Node.js (LTS) -> OpenClaude
+# OpenClaude 一键安装脚本 - 原生 Debian 版
+# 平台：原生 Debian (VPS / 服务器 / 虚拟机)
+# 架构：Standalone pnpm -> Node.js (LTS) -> @gitlawb/openclaude
 # =============================================================================
 
 set -euo pipefail
@@ -15,106 +16,109 @@ warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 step()  { echo -e "\n${BLUE}=== $* ===${NC}"; }
 die()   { echo -e "${RED}[ERR]${NC} $*" >&2; exit 1; }
 
-echo -e "\n${GREEN}=== OpenClaude 一键部署脚本 ===${NC}\n"
+echo -e "\n${GREEN}=== OpenClaude 一键部署 (原生 Debian) ===${NC}\n"
 
-# -- 1. 基础环境与依赖治理 -----------------------------------------------------
-step "配置基础环境"
+# -- 0. 基础环境 ---------------------------------------------------------------
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export DEBIAN_FRONTEND=noninteractive
 
-mkdir -p /tmp && chmod 1777 /tmp
-export LANG=C.UTF-8 LC_ALL=C.UTF-8 DEBIAN_FRONTEND=noninteractive
-
-# 修复 proot DNS (静默处理只读异常，使用国内公共 DNS 提速)
+# DNS 检查 (某些精简镜像可能缺少 resolv.conf)
 if [[ ! -s /etc/resolv.conf ]]; then
-  rm -f /etc/resolv.conf 2>/dev/null || true
-  printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\n' > /etc/resolv.conf 2>/dev/null || true
+  warn "DNS 配置缺失，写入公共 DNS..."
+  printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
 fi
 
-info "安装核心系统依赖..."
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates git unzip >/dev/null
+# -- 1. 系统依赖 ----------------------------------------------------------------
+step "安装基础依赖"
 
-info "执行底层空间清理..."
+info "更新软件包列表..."
+apt-get update -qq
+
+info "安装必要工具..."
+apt-get install -y -qq --no-install-recommends \
+  curl ca-certificates git unzip xz-utils >/dev/null
+
+info "清理 apt 缓存..."
 apt-get autoremove -y -qq >/dev/null
 apt-get clean -qq
 rm -rf /var/lib/apt/lists/* /var/cache/apt/*
-ok "系统依赖就绪"
+ok "基础环境就绪"
 
-# -- 2. 部署独立版 pnpm --------------------------------------------------------
-step "安装核心驱动: pnpm"
+# -- 2. pnpm v10 ---------------------------------------------------------------
+step "安装 pnpm (独立模式)"
 
 export PNPM_HOME="$HOME/.local/share/pnpm"
 export PATH="$PNPM_HOME:$PATH"
 mkdir -p "$PNPM_HOME"
 
-if command -v pnpm &>/dev/null; then
+if command -v pnpm &>/dev/null && pnpm --version | grep -qE '^10\.'; then
   ok "pnpm 已存在: $(pnpm --version)"
 else
-  info "拉取 pnpm 独立运行环境..."
-  
-  # 智能检测 CPU 架构
-  ARCH=$(uname -m)
-  if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
-    PNPM_BIN="pnpm-linux-x64"
-  elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    PNPM_BIN="pnpm-linux-arm64"
-  else
-    die "不支持的设备架构: $ARCH"
-  fi
+  info "获取 pnpm v10 最新版本..."
 
-  # 直接拉取编译好的独立二进制文件
-  curl -fsSL -o "$PNPM_HOME/pnpm" "https://gh-proxy.org/https://github.com/pnpm/pnpm/releases/latest/download/$PNPM_BIN"
+  case "$(uname -m)" in
+    x86_64|amd64)   PNPM_BIN="pnpm-linux-x64" ;;
+    aarch64|arm64)   PNPM_BIN="pnpm-linux-arm64" ;;
+    *) die "不支持的 CPU 架构: $(uname -m)" ;;
+  esac
+
+  PNPM_V10=$(curl -fsSL "https://registry.npmmirror.com/pnpm" \
+    | grep -oP '"10\.\d+\.\d+"' | sort -V | tail -1 | tr -d '"')
+  [[ -z "$PNPM_V10" ]] && die "无法获取 pnpm v10 最新版本"
+  info "目标版本: pnpm v${PNPM_V10}"
+
+  curl -fsSL -o "$PNPM_HOME/pnpm" \
+    "https://gh-proxy.org/https://github.com/pnpm/pnpm/releases/download/v${PNPM_V10}/$PNPM_BIN"
   chmod +x "$PNPM_HOME/pnpm"
-  
-  # 验证是否成功
-  if command -v pnpm &>/dev/null; then
-    ok "pnpm $(pnpm --version) 部署完毕"
-  else
-    die "pnpm 下载或安装失败，请检查网络"
-  fi
+
+  pnpm --version | grep -qE '^10\.' || die "pnpm 安装失败"
+  ok "pnpm $(pnpm --version) 安装成功"
 fi
 
-# -- 3. 注入 Node.js LTS -------------------------------------------------------
-step "安装运行时: Node.js"
+# -- 3. 镜像加速 ----------------------------------------------------------------
+step "配置镜像源"
 
-info "配置国内镜像加速引擎..."
-# 核心修复：直接将配置写入 ~/.npmrc，完美避开 pnpm 调用 npm 导致的崩溃
 cat > "$HOME/.npmrc" << 'EOF'
 registry=https://registry.npmmirror.com
 node-mirror:release=https://npmmirror.com/mirrors/node/
 EOF
+ok "国内镜像源已配置"
 
-info "托管安装 Node.js (LTS)..."
+# -- 4. Node.js LTS -------------------------------------------------------------
+step "安装 Node.js (LTS)"
+
+info "通过 pnpm 安装 Node.js LTS..."
 pnpm env use --global lts >/dev/null 2>&1
 
-# 验证安装结果
-if command -v node &>/dev/null; then
-  ok "Node.js $(node --version) 挂载成功"
-  ok "国内 CDN 镜像配置生效"
-else
-  die "Node.js 安装失败或路径未生效"
+command -v node &>/dev/null || die "Node.js 安装失败"
+ok "Node.js $(node --version) + npm $(npm --version) 就绪"
+
+# -- 5. openclaude ---------------------------------------------------------------
+step "安装 @gitlawb/openclaude"
+
+info "全局安装 openclaude..."
+pnpm add -g @gitlawb/openclaude
+
+OC_PKG_DIR=$(pnpm root -g)/@gitlawb/openclaude
+if [[ -f "$OC_PKG_DIR/install.cjs" ]]; then
+  info "执行 postinstall 安装原生二进制..."
+  node "$OC_PKG_DIR/install.cjs"
 fi
-
-# -- 4. 组装 OpenClaude --------------------------------------------------------
-step "安装目标应用: OpenClaude"
-
-info "获取并编译 openclaude..."
-pnpm add -g @gitlawb/openclaude >/dev/null 2>&1
 ok "OpenClaude 安装完成"
 
-# -- 5. 极限存储压榨 -----------------------------------------------------------
-step "回收磁盘空间"
-
-info "销毁临时文件与冗余缓存..."
-pnpm store prune >/dev/null 2>&1 || true
-rm -rf ~/.npm ~/.cache/pnpm /tmp/* 2>/dev/null || true
-ok "空间回收完毕"
-
-# -- 6. 环境变量固化 -----------------------------------------------------------
-step "写入环境变量"
+# -- 6. 环境变量持久化 -----------------------------------------------------------
+step "配置 shell 环境变量"
 
 BASHRC="$HOME/.bashrc"
-if ! grep -q "PNPM_HOME" "$BASHRC" 2>/dev/null; then
-  cat >> "$BASHRC" << 'EOF'
+PROFILE="$HOME/.profile"
+TARGET_FILE="$BASHRC"
+[[ ! -f "$BASHRC" ]] && TARGET_FILE="$PROFILE"
+
+if grep -q "PNPM_HOME" "$TARGET_FILE" 2>/dev/null; then
+  info "环境变量已存在于 $TARGET_FILE"
+else
+  cat >> "$TARGET_FILE" << 'EOF'
 
 # >>> pnpm + openclaude <<<
 export PNPM_HOME="$HOME/.local/share/pnpm"
@@ -124,29 +128,35 @@ case ":$PATH:" in
 esac
 # <<< pnpm + openclaude <<<
 EOF
-  ok "已配置 ~/.bashrc"
-else
-  info "~/.bashrc 已包含环境配置"
+  ok "环境变量已写入 $TARGET_FILE"
 fi
 
-# -- 7. 终检 -------------------------------------------------------------------
-step "环境自检"
+# -- 7. 自检 --------------------------------------------------------------------
+step "环境健康检查"
 
 check() {
-  local name="$1" bin="$2"
-  if command -v "$bin" &>/dev/null; then
-    echo -e "  ${GREEN}[OK]${NC}  ${name}: ${CYAN}$("$bin" --version 2>/dev/null | head -n1)${NC}"
+  local name="$1" cmd="$2" arg="${3:---version}"
+  if output=$("$cmd" $arg 2>/dev/null); then
+    echo -e "  ${GREEN}[OK]${NC}  ${name}: ${CYAN}$(echo "$output" | head -1)${NC}"
   else
-    echo -e "  ${RED}[ERR]${NC} ${name}: 模块丢失"
+    echo -e "  ${RED}[FAIL]${NC} ${name}"
   fi
 }
 
-check "包管理器 (pnpm)" "pnpm"
-check "运行时   (node)" "node"
-check "应用程序 (openclaude)" "openclaude"
+check "pnpm"       "pnpm"
+check "Node.js"    "node"       "-v"
+check "npm"        "npm"        "-v"
+check "openclaude" "openclaude"
 
-# -- 结束 ----------------------------------------------------------------------
+# -- 8. 清理 --------------------------------------------------------------------
+step "清理缓存"
+
+pnpm store prune >/dev/null 2>&1 || true
+rm -rf ~/.cache/pnpm /tmp/* 2>/dev/null || true
+ok "空间回收完成"
+
+# -- 完成 -----------------------------------------------------------------------
 echo -e "\n${GREEN}===========================================${NC}"
-echo -e "  ${CYAN}source ~/.bashrc${NC}  (激活环境)"
+echo -e "  ${CYAN}source ~/.bashrc${NC}  (激活当前会话)"
 echo -e "  ${CYAN}openclaude${NC}        (启动应用)"
 echo -e "${GREEN}===========================================${NC}\n"
